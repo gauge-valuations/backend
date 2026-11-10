@@ -32,7 +32,12 @@ Never write `Co-Authored-By` or any tool/agent attribution into commits, PR bodi
 ## Routes
 
 - `GET /api/health` -> `{ "ok": true }`
+- `GET /api/property?address=...` -> `PropertyReport` (see `lib/types.ts`), or
+  `{ error, message }` with 400 / 402 / 404 / 500 / 502. Logic lives in `lib/property/`.
+
+`lib/types.ts` is a byte-for-byte copy of the mobile repo's `src/types.ts` (the shared
+contract). Never edit it here; change it in the mobile repo first, then re-copy.
 
 ## Out of scope
 
-Until explicitly asked for: `/api/property`, the Rentcast client, caching, response normalization.
+Until explicitly asked for: caching.
