@@ -41,3 +41,6 @@ next-env.d.ts
 
 # keep the env template committed
 !.env.example
+
+# raw Rentcast captures (real addresses / agent contact info) -- never commit
+/fixtures/rentcast/raw/
