@@ -12,7 +12,7 @@ import {
   type ReportCache,
   type UpstashLikeClient,
 } from "@/lib/cache";
-import { REPORT_CACHE_TTL_SECONDS, reportCacheKey } from "@/lib/property/handler";
+import { PINNED_CACHE_TTL_SECONDS, REPORT_CACHE_TTL_SECONDS, reportCacheKey } from "@/lib/property/handler";
 
 import { addressRouter, LISTED_ADDRESS, SKIP_NO_FIXTURES, UNLISTED_ADDRESS } from "./helpers/fixtures";
 import { callProperty } from "./helpers/request";
@@ -41,6 +41,16 @@ describe("normalizeAddressKey", () => {
 });
 
 describe("MemoryCache", () => {
+  test("incrBy counts up, keeps the first expiry, and restarts after it", async () => {
+    let now = 1_000_000;
+    const cache = new MemoryCache(() => now);
+    assert.equal(await cache.incrBy("c", 4, 10), 4);
+    now += 5_000;
+    assert.equal(await cache.incrBy("c", 4, 10), 8); // expiry not extended
+    now += 5_000;
+    assert.equal(await cache.incrBy("c", 4, 10), 4); // expired at +10s -> fresh counter
+  });
+
   test("expires entries after the TTL", async () => {
     let now = 1_000_000;
     const cache = new MemoryCache(() => now);
@@ -58,11 +68,13 @@ function recordingCache() {
   const inner = new MemoryCache();
   const sets: { key: string; ttl: number }[] = [];
   const cache: ReportCache = {
+    shared: false,
     get: (key) => inner.get(key),
     set: async (key, value, ttl) => {
       sets.push({ key, ttl });
       await inner.set(key, value, ttl);
     },
+    incrBy: (key, amount, ttl) => inner.incrBy(key, amount, ttl),
   };
   return { cache, inner, sets };
 }
@@ -74,7 +86,9 @@ describe("report caching", { skip: SKIP_NO_FIXTURES }, () => {
     assert.equal(first.status, 200);
     assert.equal(first.headers.get("x-cache"), "MISS");
     assert.equal(first.calls.length, 4);
-    assert.deepEqual(sets, [{ key: reportCacheKey(LISTED_ADDRESS), ttl: REPORT_CACHE_TTL_SECONDS }]);
+    // Prentice Ln is a pinned sample address, so it gets the 30-day TTL (budget.test.ts
+    // covers pinned vs non-pinned); the default TTL stays 86400.
+    assert.deepEqual(sets, [{ key: reportCacheKey(LISTED_ADDRESS), ttl: PINNED_CACHE_TTL_SECONDS }]);
     assert.equal(REPORT_CACHE_TTL_SECONDS, 86_400);
 
     const second = await callProperty(LISTED_ADDRESS, addressRouter(), { deps: { cache } });
@@ -124,14 +138,19 @@ describe("report caching", { skip: SKIP_NO_FIXTURES }, () => {
     }
   });
 
-  test("a throwing cache does not break the request", async () => {
+  test("a throwing cache get/set does not break the request", async () => {
+    // Only get/set fail here; the budget counter works. (A failing counter fails
+    // CLOSED instead -- see budget.test.ts.)
+    const counter = new MemoryCache();
     const broken: ReportCache = {
+      shared: false,
       get: async () => {
         throw new Error("redis down: secret-ish detail");
       },
       set: async () => {
         throw new Error("redis down: secret-ish detail");
       },
+      incrBy: (key, amount, ttl) => counter.incrBy(key, amount, ttl),
     };
     const r = await callProperty(LISTED_ADDRESS, addressRouter(), { deps: { cache: broken } });
     assert.equal(r.status, 200);
@@ -145,7 +164,7 @@ describe("Upstash cache adapter (fake client)", () => {
 
   function fakeClient() {
     const store = new Map<string, string>();
-    const calls: { op: string; key: string; ex?: number }[] = [];
+    const calls: { op: string; key: string; ex?: number; n?: number }[] = [];
     const client: UpstashLikeClient = {
       async get(key) {
         calls.push({ op: "get", key });
@@ -156,9 +175,31 @@ describe("Upstash cache adapter (fake client)", () => {
         store.set(key, value);
         return "OK";
       },
+      async incrby(key, amount) {
+        calls.push({ op: "incrby", key, n: amount });
+        const total = Number(store.get(key) ?? 0) + amount;
+        store.set(key, String(total));
+        return total;
+      },
+      async expire(key, seconds) {
+        calls.push({ op: "expire", key, ex: seconds });
+        return 1;
+      },
     };
     return { client, calls };
   }
+
+  test("counter: INCRBY, with EXPIRE only when the key is created", async () => {
+    const { client, calls } = fakeClient();
+    const cache = new UpstashCache(client);
+    assert.equal(await cache.incrBy("budget:rentcast:2026-11", 4, 3_456_000), 4);
+    assert.equal(await cache.incrBy("budget:rentcast:2026-11", 4, 3_456_000), 8);
+    assert.deepEqual(calls, [
+      { op: "incrby", key: "budget:rentcast:2026-11", n: 4 },
+      { op: "expire", key: "budget:rentcast:2026-11", ex: 3_456_000 },
+      { op: "incrby", key: "budget:rentcast:2026-11", n: 4 },
+    ]);
+  });
 
   test("stores and reads back a value with the TTL as EX", async () => {
     const { client, calls } = fakeClient();
@@ -170,7 +211,12 @@ describe("Upstash cache adapter (fake client)", () => {
   });
 
   test("re-serializes a value the client already parsed", async () => {
-    const cache = new UpstashCache({ get: async () => ({ a: 1 }), set: async () => "OK" });
+    const cache = new UpstashCache({
+      get: async () => ({ a: 1 }),
+      set: async () => "OK",
+      incrby: async () => 0,
+      expire: async () => 1,
+    });
     assert.equal(await cache.get("k"), '{"a":1}');
   });
 

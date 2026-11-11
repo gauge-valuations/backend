@@ -28,6 +28,18 @@ export class UnauthorizedError extends Error {
   }
 }
 
+/**
+ * Our monthly call budget refused to spend (cap reached, or the budget check could
+ * not run). Answered like a billing problem: 402 upstream_billing, no Rentcast call.
+ * The message is a fixed, safe log line.
+ */
+export class CallBudgetError extends Error {
+  constructor(logLine: "monthly call budget reached" | "budget check failed" | "budget check failed: no shared counter") {
+    super(logLine);
+    this.name = "CallBudgetError";
+  }
+}
+
 /** The request's address failed local validation. */
 export class InvalidAddressError extends Error {
   constructor() {
@@ -100,6 +112,7 @@ function codeForRentcast(err: RentcastError): ApiErrorCode {
 
 export function toHttpError(err: unknown): HttpError {
   if (err instanceof UnauthorizedError) return ERRORS.unauthorized;
+  if (err instanceof CallBudgetError) return ERRORS.upstream_billing;
   if (err instanceof InvalidAddressError) return ERRORS.invalid_address;
   if (err instanceof IncompleteDataError) return ERRORS.upstream_incomplete;
   if (err instanceof RentcastError) return ERRORS[codeForRentcast(err)];

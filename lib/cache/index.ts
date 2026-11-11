@@ -7,9 +7,28 @@
 import { Redis } from "@upstash/redis";
 
 export type ReportCache = {
+  /** True when every server instance sees the same data (Upstash), false for in-memory. */
+  readonly shared: boolean;
   get(key: string): Promise<string | null>;
   set(key: string, value: string, ttlSeconds: number): Promise<void>;
+  /**
+   * Atomically adds `amount` to a counter and returns the new total. The expiry is
+   * set when the counter is first created and is not extended by later increments.
+   */
+  incrBy(key: string, amount: number, ttlSeconds: number): Promise<number>;
 };
+
+/** A slow store must not eat the request's time budget. */
+export const CACHE_TIMEOUT_MS = 1_500;
+
+/** Rejects if `promise` doesn't settle within CACHE_TIMEOUT_MS. */
+export function withCacheTimeout<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("cache timeout")), CACHE_TIMEOUT_MS);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 /** Env var names, exported so tests can reference them without repeating them. */
 export const UPSTASH_ENV = {
@@ -21,6 +40,7 @@ export const UPSTASH_ENV = {
 // In-memory implementation
 
 export class MemoryCache implements ReportCache {
+  readonly shared = false;
   private readonly entries = new Map<string, { value: string; expiresAt: number }>();
 
   constructor(private readonly now: () => number = Date.now) {}
@@ -38,19 +58,42 @@ export class MemoryCache implements ReportCache {
   async set(key: string, value: string, ttlSeconds: number): Promise<void> {
     this.entries.set(key, { value, expiresAt: this.now() + ttlSeconds * 1000 });
   }
+
+  async incrBy(key: string, amount: number, ttlSeconds: number): Promise<number> {
+    const current = await this.get(key); // null when missing or expired
+    if (current === null) {
+      await this.set(key, String(amount), ttlSeconds);
+      return amount;
+    }
+    const entry = this.entries.get(key) as { value: string; expiresAt: number };
+    const total = Number(current) + amount;
+    entry.value = String(total); // keep the original expiry
+    return total;
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Upstash implementation
 
-/** The two Upstash client methods we use; injectable so tests can fake them. */
+/** The Upstash client methods we use; injectable so tests can fake them. */
 export type UpstashLikeClient = {
   get(key: string): Promise<unknown>;
   set(key: string, value: string, options: { ex: number }): Promise<unknown>;
+  incrby(key: string, amount: number): Promise<number>;
+  expire(key: string, seconds: number): Promise<unknown>;
 };
 
 export class UpstashCache implements ReportCache {
+  readonly shared = true;
+
   constructor(private readonly client: UpstashLikeClient) {}
+
+  async incrBy(key: string, amount: number, ttlSeconds: number): Promise<number> {
+    const total = await this.client.incrby(key, amount);
+    // INCRBY creates a missing key at 0; total === amount means we just created it.
+    if (total === amount) await this.client.expire(key, ttlSeconds);
+    return total;
+  }
 
   async get(key: string): Promise<string | null> {
     const value = await this.client.get(key);

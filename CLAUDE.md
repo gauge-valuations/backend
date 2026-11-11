@@ -49,7 +49,7 @@ Never write `Co-Authored-By` or any tool/agent attribution into commits, PR bodi
 contract), refreshed by `cp` only. Never edit it here; change it in the mobile repo
 first, then re-copy and check `shasum`.
 
-## CORS, demo gate, caching
+## CORS, demo gate, caching, call budget
 
 - **CORS** (`lib/cors.ts`): `ALLOWED_ORIGINS` = comma-separated exact origins. A listed
   origin is echoed in `Access-Control-Allow-Origin`; no wildcard. `Vary: Origin` whenever
@@ -63,3 +63,21 @@ first, then re-copy and check `shasum`.
   (`lib/address.ts`), TTL 86400s, successful reports only. Responses carry
   `X-Cache: HIT | MISS`. Cache read/write failures are non-fatal: logged as one safe line,
   and the request continues.
+- **Pinned addresses** (`lib/pinnedAddresses.ts`): the app's "Try these" samples, cached
+  for 30 days (2,592,000s) instead of 24h, matched by normalized key. **This list must
+  match `src/sampleAddresses.ts` in the mobile repo** -- two repos on purpose; change both.
+- **Monthly call budget** (`lib/budget.ts`): a hard cap, because the Rentcast Developer plan
+  bills $0.20 per call beyond 50. On a cache MISS only (after gate, validation and cache
+  lookup), 4 calls are reserved on `budget:rentcast:YYYY-MM` (40-day TTL) before any Rentcast
+  call; over `MONTHLY_CALL_BUDGET` (default 40) -> 402 `upstream_billing`, no call made. No
+  refunds on failure. The period starts on `BILLING_DAY` (1-28, UTC, default 1); `YYYY-MM`
+  is the month the current period started. **Fails closed**: if the counter store throws or
+  times out (1.5s), or in production when the store isn't shared (no Upstash), uncached
+  reports get 402. So a down Upstash means cache misses are refused, not paid for.
+  Example: budget 40, billing day 9 -> 10 uncached reports per period (Nov 9 - Dec 8);
+  the 11th gets 402 until Dec 9. Cache hits stay free and unlimited.
+- **Warm-up** (`scripts/warm-cache.ts`): `node --env-file=.env.local scripts/warm-cache.ts`
+  GETs each pinned address from `BASE_URL` (https, or http://localhost) with `X-Demo-Key`
+  from `DEMO_KEY`, printing only address, status and `X-Cache`. Each MISS spends 4 budgeted
+  calls. It imports `lib/pinnedAddresses.ts` with a `.ts` extension
+  (`allowImportingTsExtensions` in tsconfig), so that file must stay import-free.

@@ -1,6 +1,7 @@
 // Calls the /api/property handler offline with safe test defaults: a fake fetch,
 // the sentinel Rentcast key, a FRESH in-memory cache (so tests never share hits),
-// the demo gate off, and CORS off. Each can be overridden per test.
+// the demo gate off, CORS off, and a generous call budget that doesn't require a
+// shared counter. Each can be overridden per test.
 
 import { MemoryCache } from "@/lib/cache";
 import { handlePropertyRequest, type HandlerDeps } from "@/lib/property/handler";
@@ -37,6 +38,8 @@ export async function callProperty(
     cache: new MemoryCache(),
     demoKey: null,
     allowedOrigins: [],
+    budget: { budget: 1_000, billingDay: 1 },
+    requireSharedCounter: false,
     ...options.deps,
   });
   const text = await res.text();

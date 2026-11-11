@@ -22,6 +22,7 @@ function assertNoDemoLeak(r: CallResult) {
 function spyCache(): ReportCache & { touches: number } {
   const inner = new MemoryCache();
   const spy = {
+    shared: false,
     touches: 0,
     async get(key: string) {
       spy.touches++;
@@ -30,6 +31,10 @@ function spyCache(): ReportCache & { touches: number } {
     async set(key: string, value: string, ttl: number) {
       spy.touches++;
       return inner.set(key, value, ttl);
+    },
+    async incrBy(key: string, amount: number, ttl: number) {
+      spy.touches++;
+      return inner.incrBy(key, amount, ttl);
     },
   };
   return spy;
