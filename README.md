@@ -281,8 +281,7 @@ tests/                    offline tests and helpers
 
 Built and live:
 
-- `GET /api/property` and `GET /api/health` on Vercel, used by the web app and the
-  mobile app.
+- `GET /api/property` and `GET /api/health` on Vercel, used by the web app. The iOS and Android builds call the same endpoint but have not been tested against the live backend yet.
 - The comp-based valuation and rent engine with Rentcast fallback.
 - Caching, the monthly call budget, CORS allow-list and demo gate.
 
