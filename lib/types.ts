@@ -17,7 +17,7 @@ export type Property = {
 export type Valuation = {
   estimatedValue: number;
   listPrice?: number;
-  potentialMargin?: number; // estimatedValue - listPrice, only when listPrice exists
+  potentialMargin?: number; // backend may omit; client derives estimatedValue - listPrice when listPrice exists
   // Estimated value per square foot of living area, in dollars.
   pricePerSqft?: number;
   // Low end of the likely value range, in dollars.
