@@ -4,18 +4,15 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import { normalizeAddressKey } from "@/lib/address";
-import {
-  createCache,
-  MemoryCache,
-  UPSTASH_ENV,
-  UpstashCache,
-  type ReportCache,
-  type UpstashLikeClient,
-} from "@/lib/cache";
+import { createCache, MemoryCache, UpstashCache, type ReportCache, type UpstashLikeClient } from "@/lib/cache";
+import { UPSTASH_ENV_PAIRS } from "@/lib/cache/config";
 import { PINNED_CACHE_TTL_SECONDS, REPORT_CACHE_TTL_SECONDS, reportCacheKey } from "@/lib/property/handler";
 
 import { addressRouter, LISTED_ADDRESS, SKIP_NO_FIXTURES, UNLISTED_ADDRESS } from "./helpers/fixtures";
 import { callProperty } from "./helpers/request";
+
+/** Our own env var name pair (tests never spell the names out). */
+const OWN = UPSTASH_ENV_PAIRS[0];
 
 describe("normalizeAddressKey", () => {
   test("spacing, case, commas and USPS words collapse to one key", () => {
@@ -223,7 +220,7 @@ describe("Upstash cache adapter (fake client)", () => {
   test("selection: Upstash when both env vars are set; log never has the token", async () => {
     const logs: string[] = [];
     const { client } = fakeClient();
-    const env = { [UPSTASH_ENV.url]: "https://fake-upstash.example.io", [UPSTASH_ENV.token]: TOKEN };
+    const env = { [OWN.url]: "https://fake-upstash.example.io", [OWN.token]: TOKEN };
     const cache = createCache({ env, log: (l) => logs.push(l), createUpstashClient: () => client });
     assert.ok(cache instanceof UpstashCache);
     await cache.set("k", "v", 5);
@@ -233,7 +230,7 @@ describe("Upstash cache adapter (fake client)", () => {
   });
 
   test("selection: in-memory when either env var is missing, one safe log line", () => {
-    for (const env of [{}, { [UPSTASH_ENV.url]: "https://fake-upstash.example.io" }, { [UPSTASH_ENV.token]: TOKEN }]) {
+    for (const env of [{}, { [OWN.url]: "https://fake-upstash.example.io" }, { [OWN.token]: TOKEN }]) {
       const logs: string[] = [];
       const cache = createCache({ env, log: (l) => logs.push(l), createUpstashClient: () => assert.fail("must not build a client") });
       assert.ok(cache instanceof MemoryCache);

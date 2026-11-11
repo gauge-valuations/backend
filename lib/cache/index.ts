@@ -1,10 +1,12 @@
 // Report cache: a tiny string key/value store with expiry.
 //
-// Upstash Redis is used when both UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN
-// are set (the token is a secret: never logged). Otherwise an in-memory Map is used,
-// which is per-process only (on Vercel, each warm instance has its own).
+// Upstash Redis is used when lib/cache/config.ts finds a complete url + token pair
+// (the token is a secret: never logged). Otherwise an in-memory Map is used, which is
+// per-process only (on Vercel, each warm instance has its own).
 
 import { Redis } from "@upstash/redis";
+
+import { resolveUpstashConfig, type UpstashConfig } from "./config";
 
 export type ReportCache = {
   /** True when every server instance sees the same data (Upstash), false for in-memory. */
@@ -29,12 +31,6 @@ export function withCacheTimeout<T>(promise: Promise<T>): Promise<T> {
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
-
-/** Env var names, exported so tests can reference them without repeating them. */
-export const UPSTASH_ENV = {
-  url: "UPSTASH_REDIS_REST_URL",
-  token: "UPSTASH_REDIS_REST_TOKEN",
-} as const;
 
 // ---------------------------------------------------------------------------
 // In-memory implementation
@@ -114,22 +110,28 @@ export class UpstashCache implements ReportCache {
 export type CreateCacheOptions = {
   env?: Record<string, string | undefined>;
   log?: (line: string) => void;
-  createUpstashClient?: () => UpstashLikeClient;
+  createUpstashClient?: (config: UpstashConfig) => UpstashLikeClient;
 };
 
-function defaultUpstashClient(): UpstashLikeClient {
-  // Redis.fromEnv() reads the URL and token itself. Values stay strings, and one
-  // retry keeps a cache outage from stalling a request.
-  return Redis.fromEnv({ automaticDeserialization: false, retry: { retries: 1 } });
+function defaultUpstashClient(config: UpstashConfig): UpstashLikeClient {
+  // Built from the exact pair config.ts resolved -- NOT Redis.fromEnv(), which looks
+  // up the url and token independently and could mix one name from each pair.
+  // Values stay strings, and one retry keeps a cache outage from stalling a request.
+  return new Redis({
+    url: config.url,
+    token: config.token,
+    automaticDeserialization: false,
+    retry: { retries: 1 },
+  });
 }
 
 /** Picks Upstash when configured, otherwise in-memory. Logs one safe line. */
 export function createCache(options: CreateCacheOptions = {}): ReportCache {
-  const env = options.env ?? process.env;
   const log = options.log ?? ((line: string) => console.log(line));
-  if (env[UPSTASH_ENV.url]?.trim() && env[UPSTASH_ENV.token]?.trim()) {
-    log("cache: upstash");
-    return new UpstashCache((options.createUpstashClient ?? defaultUpstashClient)());
+  const config = resolveUpstashConfig(options.env ?? process.env);
+  if (config) {
+    log("cache: upstash"); // never the url, token, or which pair
+    return new UpstashCache((options.createUpstashClient ?? defaultUpstashClient)(config));
   }
   log("cache: in-memory");
   return new MemoryCache();

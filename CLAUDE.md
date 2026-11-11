@@ -20,7 +20,8 @@ nothing else. It must never appear in:
 
 The real value lives only in Vercel env vars and a password manager.
 
-The same rules apply to the Upstash token (`UPSTASH_REDIS_REST_TOKEN`). `DEMO_KEY` is not
+The same rules apply to the Upstash tokens (`UPSTASH_REDIS_REST_TOKEN`, or Vercel's
+`KV_REST_API_TOKEN` / `KV_REST_API_READ_ONLY_TOKEN`). `DEMO_KEY` is not
 a secret (it ships in the app bundle) but is still never logged or echoed.
 
 ## Git
@@ -58,8 +59,11 @@ first, then re-copy and check `shasum`.
   matching `X-Demo-Key` header (constant-time compare) or returns 401 `unauthorized`
   before any cache or Rentcast access. A quota speed bump, not a secret: the matching
   value ships in the app bundle. Unset = gate off. `/api/health` stays open.
-- **Caching** (`lib/cache/`): Upstash Redis when its URL and token env vars are set,
-  otherwise in-memory (per process). Key `report:v1:<normalizeAddressKey(address)>`
+- **Caching** (`lib/cache/`): Upstash Redis when a complete url + token pair is set,
+  otherwise in-memory (per process). `lib/cache/config.ts` is the only code that knows the
+  names: `UPSTASH_REDIS_REST_URL`/`_TOKEN` first, then `KV_REST_API_URL`/`_TOKEN` (the pair
+  Vercel's Upstash integration sets). Never mixed across pairs; the read-only token,
+  `KV_URL` and `REDIS_URL` are ignored. Key `report:v1:<normalizeAddressKey(address)>`
   (`lib/address.ts`), TTL 86400s, successful reports only. Responses carry
   `X-Cache: HIT | MISS`. Cache read/write failures are non-fatal: logged as one safe line,
   and the request continues.
