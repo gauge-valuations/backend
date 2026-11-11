@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
+import { displayAddress } from "@/lib/displayAddress";
 import { toHttpError } from "@/lib/errors";
 import { stripNulls } from "@/lib/normalize/nulls";
 import { RentcastError } from "@/lib/rentcast/client";
@@ -79,7 +80,7 @@ describe("GET /api/property (offline)", { skip: SKIP_NO_FIXTURES }, () => {
     // Comps: ALL 15, correlation order, Active -> for_sale, Inactive -> off_market.
     const comparables = value.comparables ?? [];
     assert.equal(report.comps.length, 15);
-    assert.deepEqual(report.comps.map((c) => c.address), comparables.map((c) => c.formattedAddress));
+    assert.deepEqual(report.comps.map((c) => c.address), comparables.map((c) => displayAddress(c)));
     assert.deepEqual(
       report.comps.map((c) => c.status),
       comparables.map((c) => (c.status === "Active" ? "for_sale" : "off_market")),
@@ -91,7 +92,19 @@ describe("GET /api/property (offline)", { skip: SKIP_NO_FIXTURES }, () => {
     // Rent comps: all 15, all "for_lease", in order.
     assert.equal(report.rent.rentComps.length, 15);
     assert.ok(report.rent.rentComps.every((c) => c.status === "for_lease"));
-    assert.deepEqual(report.rent.rentComps.map((c) => c.address), (rent.comparables ?? []).map((c) => c.formattedAddress));
+    assert.deepEqual(report.rent.rentComps.map((c) => c.address), (rent.comparables ?? []).map((c) => displayAddress(c)));
+
+    // Street names Rentcast split across two lines come back whole, and every comp
+    // address is "street, City, ST 12345" with no comma inside the street.
+    const saleAddresses = report.comps.map((c) => c.address);
+    assert.ok(saleAddresses.includes("2004 Rue De St Tropez, Austin, TX 78746"));
+    assert.ok(saleAddresses.includes("2305 Trail of the Madrones, Austin, TX 78746"));
+    const rentAddresses = report.rent.rentComps.map((c) => c.address);
+    assert.ok(rentAddresses.includes("2007 Rue De St Tropez, Austin, TX 78746"));
+    assert.ok(rentAddresses.includes("2100 Rue De St Germaine, Austin, TX 78746"));
+    for (const address of [...saleAddresses, ...rentAddresses]) {
+      assert.match(address, /^[^,]+, [^,]+, [A-Z]{2} \d{5}$/, address);
+    }
 
     // Market zip comes from the AVM subject.
     assert.equal(report.market.zip, "78746");

@@ -37,6 +37,13 @@ describe("normalizeAddressKey", () => {
   });
 });
 
+describe("report cache key", () => {
+  test("is version 2 plus the normalized typed address", () => {
+    assert.equal(reportCacheKey("3901 Prentice Ln, Austin, TX 78746"), "report:v2:3901 prentice ln austin tx 78746");
+    assert.equal(reportCacheKey("3901  prentice lane austin texas 78746"), "report:v2:3901 prentice ln austin tx 78746");
+  });
+});
+
 describe("MemoryCache", () => {
   test("incrBy counts up, keeps the first expiry, and restarts after it", async () => {
     let now = 1_000_000;
@@ -201,10 +208,10 @@ describe("Upstash cache adapter (fake client)", () => {
   test("stores and reads back a value with the TTL as EX", async () => {
     const { client, calls } = fakeClient();
     const cache = new UpstashCache(client);
-    assert.equal(await cache.get("report:v1:x"), null);
-    await cache.set("report:v1:x", '{"a":1}', 86_400);
-    assert.equal(await cache.get("report:v1:x"), '{"a":1}');
-    assert.deepEqual(calls[1], { op: "set", key: "report:v1:x", ex: 86_400 });
+    assert.equal(await cache.get("report:v2:x"), null);
+    await cache.set("report:v2:x", '{"a":1}', 86_400);
+    assert.equal(await cache.get("report:v2:x"), '{"a":1}');
+    assert.deepEqual(calls[1], { op: "set", key: "report:v2:x", ex: 86_400 });
   });
 
   test("re-serializes a value the client already parsed", async () => {

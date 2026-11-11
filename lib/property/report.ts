@@ -1,5 +1,6 @@
 // Builds a PropertyReport for one address from four Rentcast calls.
 
+import { displayAddress } from "@/lib/displayAddress";
 import { IncompleteDataError } from "@/lib/errors";
 import { createRentcastClient, RentcastError, type FetchLike } from "@/lib/rentcast/client";
 import type {
@@ -49,7 +50,7 @@ function toProperty(subject: RentcastSubjectProperty | undefined): Property {
   if (missing.length > 0) throw new IncompleteDataError(`subject ${missing.join(",")}`);
 
   const property: Property = {
-    address: s.formattedAddress as string,
+    address: displayAddress(s),
     beds: s.bedrooms as number,
     baths: s.bathrooms as number,
     sqft: s.squareFootage as number,
@@ -84,9 +85,8 @@ function toComp(c: RentcastComparable, status: Comp["status"], kind: "sale" | "r
     return undefined;
   }
   const comp: Comp = {
-    // formattedAddress is used whole, never split, so stray commas
-    // ("2004 Rue De St, Tropez, ...") are harmless.
-    address: c.formattedAddress,
+    // Display only: removes Rentcast's stray street comma ("2004 Rue De St, Tropez, ...").
+    address: displayAddress(c),
     beds: c.bedrooms,
     baths: c.bathrooms,
     sqft: c.squareFootage,

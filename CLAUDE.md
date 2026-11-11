@@ -63,8 +63,9 @@ first, then re-copy and check `shasum`.
   otherwise in-memory (per process). `lib/cache/config.ts` is the only code that knows the
   names: `UPSTASH_REDIS_REST_URL`/`_TOKEN` first, then `KV_REST_API_URL`/`_TOKEN` (the pair
   Vercel's Upstash integration sets). Never mixed across pairs; the read-only token,
-  `KV_URL` and `REDIS_URL` are ignored. Key `report:v1:<normalizeAddressKey(address)>`
-  (`lib/address.ts`), TTL 86400s, successful reports only. Responses carry
+  `KV_URL` and `REDIS_URL` are ignored. Key `report:v2:<normalizeAddressKey(address)>`
+  (`lib/address.ts`); bump the version (`REPORT_CACHE_PREFIX`) whenever the shape or
+  content of a cached report changes. TTL 86400s, successful reports only. Responses carry
   `X-Cache: HIT | MISS`. Cache read/write failures are non-fatal: logged as one safe line,
   and the request continues.
 - **Pinned addresses** (`lib/pinnedAddresses.ts`): the app's "Try these" samples, cached

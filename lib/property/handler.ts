@@ -25,8 +25,11 @@ import { parsePropertyReport, type PropertyReport } from "@/lib/types";
 export const REPORT_CACHE_TTL_SECONDS = 86_400;
 /** Pinned sample addresses are cached for 30 days. */
 export const PINNED_CACHE_TTL_SECONDS = 2_592_000;
-/** Bump the version to invalidate every cached report after a shape change. */
-export const REPORT_CACHE_PREFIX = "report:v1:";
+/**
+ * Bump this version whenever the shape or content of a cached report changes, so old
+ * reports are never served. v2: comp and subject addresses are cleaned for display.
+ */
+export const REPORT_CACHE_PREFIX = "report:v2:";
 
 const PINNED_KEYS = new Set(PINNED_ADDRESSES.map(normalizeAddressKey));
 
