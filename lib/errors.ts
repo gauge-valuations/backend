@@ -5,6 +5,7 @@
 import { RentcastError } from "@/lib/rentcast/client";
 
 export type ApiErrorCode =
+  | "unauthorized"
   | "invalid_address"
   | "not_found"
   | "upstream_billing"
@@ -15,6 +16,17 @@ export type ApiErrorCode =
 export type ApiErrorBody = { error: ApiErrorCode; message: string };
 
 export type HttpError = { status: number; body: ApiErrorBody };
+
+/**
+ * Our own demo gate rejected the request (missing or wrong X-Demo-Key). Distinct
+ * from an upstream 401, which is our Rentcast key/config problem and maps to 500.
+ */
+export class UnauthorizedError extends Error {
+  constructor() {
+    super("unauthorized");
+    this.name = "UnauthorizedError";
+  }
+}
 
 /** The request's address failed local validation. */
 export class InvalidAddressError extends Error {
@@ -33,6 +45,10 @@ export class IncompleteDataError extends Error {
 }
 
 const ERRORS: Record<ApiErrorCode, HttpError> = {
+  unauthorized: {
+    status: 401,
+    body: { error: "unauthorized", message: "This request is not authorized." },
+  },
   invalid_address: {
     status: 400,
     body: { error: "invalid_address", message: "The address is missing or could not be understood." },
@@ -83,6 +99,7 @@ function codeForRentcast(err: RentcastError): ApiErrorCode {
 }
 
 export function toHttpError(err: unknown): HttpError {
+  if (err instanceof UnauthorizedError) return ERRORS.unauthorized;
   if (err instanceof InvalidAddressError) return ERRORS.invalid_address;
   if (err instanceof IncompleteDataError) return ERRORS.upstream_incomplete;
   if (err instanceof RentcastError) return ERRORS[codeForRentcast(err)];

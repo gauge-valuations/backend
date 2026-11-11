@@ -6,8 +6,10 @@ export type Property = {
   beds: number;
   baths: number;
   sqft: number;
-  yearBuilt: number;
-  lotSizeSqft: number;
+  // Year the home was built. Optional: condo and land records often lack it.
+  yearBuilt?: number;
+  // Lot size in square feet. Optional: condo and land records often lack it.
+  lotSizeSqft?: number;
   lastSalePrice?: number;
   lastSaleDate?: string;
 };
@@ -16,6 +18,14 @@ export type Valuation = {
   estimatedValue: number;
   listPrice?: number;
   potentialMargin?: number; // estimatedValue - listPrice, only when listPrice exists
+  // Estimated value per square foot of living area, in dollars.
+  pricePerSqft?: number;
+  // Low end of the likely value range, in dollars.
+  valueRangeLow?: number;
+  // High end of the likely value range, in dollars.
+  valueRangeHigh?: number;
+  // True when few comparable homes were usable, so the estimate is less reliable.
+  lowConfidence?: boolean;
 };
 
 export type Comp = {
@@ -24,13 +34,23 @@ export type Comp = {
   baths: number;
   sqft: number;
   price: number;
-  status: "for_sale" | "sold" | "for_lease";
+  // "off_market": an inactive listing that is NOT a confirmed sale; its price is
+  // the last asking price, not a sale price.
+  status: "for_sale" | "sold" | "for_lease" | "off_market";
   distanceMiles: number;
+  // price / sqft in dollars (for rent comps: monthly rent per square foot).
+  pricePerSqft?: number;
 };
 
 export type RentEstimate = {
   monthlyRent: number;
   rentComps: Comp[];
+  // Estimated monthly rent per square foot, in dollars.
+  rentPerSqft?: number;
+  // Low end of the likely monthly rent range, in dollars.
+  rentRangeLow?: number;
+  // High end of the likely monthly rent range, in dollars.
+  rentRangeHigh?: number;
 };
 
 export type MarketSnapshot = {
@@ -55,6 +75,10 @@ function isOptionalFiniteNumber(value: unknown): boolean {
   return value === undefined || isFiniteNumber(value);
 }
 
+function isOptionalBoolean(value: unknown): boolean {
+  return value === undefined || typeof value === "boolean";
+}
+
 function isComp(value: unknown): value is Comp {
   if (value === null || typeof value !== "object") return false;
   const c = value as Record<string, unknown>;
@@ -64,8 +88,12 @@ function isComp(value: unknown): value is Comp {
     isFiniteNumber(c.baths) &&
     isFiniteNumber(c.sqft) &&
     isFiniteNumber(c.price) &&
-    (c.status === "for_sale" || c.status === "sold" || c.status === "for_lease") &&
-    isFiniteNumber(c.distanceMiles)
+    (c.status === "for_sale" ||
+      c.status === "sold" ||
+      c.status === "for_lease" ||
+      c.status === "off_market") &&
+    isFiniteNumber(c.distanceMiles) &&
+    isOptionalFiniteNumber(c.pricePerSqft)
   );
 }
 
@@ -77,8 +105,8 @@ function isProperty(value: unknown): value is Property {
     isFiniteNumber(p.beds) &&
     isFiniteNumber(p.baths) &&
     isFiniteNumber(p.sqft) &&
-    isFiniteNumber(p.yearBuilt) &&
-    isFiniteNumber(p.lotSizeSqft) &&
+    isOptionalFiniteNumber(p.yearBuilt) &&
+    isOptionalFiniteNumber(p.lotSizeSqft) &&
     isOptionalFiniteNumber(p.lastSalePrice) &&
     (p.lastSaleDate === undefined || typeof p.lastSaleDate === "string")
   );
@@ -90,14 +118,25 @@ function isValuation(value: unknown): value is Valuation {
   return (
     isFiniteNumber(v.estimatedValue) &&
     isOptionalFiniteNumber(v.listPrice) &&
-    isOptionalFiniteNumber(v.potentialMargin)
+    isOptionalFiniteNumber(v.potentialMargin) &&
+    isOptionalFiniteNumber(v.pricePerSqft) &&
+    isOptionalFiniteNumber(v.valueRangeLow) &&
+    isOptionalFiniteNumber(v.valueRangeHigh) &&
+    isOptionalBoolean(v.lowConfidence)
   );
 }
 
 function isRentEstimate(value: unknown): value is RentEstimate {
   if (value === null || typeof value !== "object") return false;
   const r = value as Record<string, unknown>;
-  return isFiniteNumber(r.monthlyRent) && Array.isArray(r.rentComps) && r.rentComps.every(isComp);
+  return (
+    isFiniteNumber(r.monthlyRent) &&
+    Array.isArray(r.rentComps) &&
+    r.rentComps.every(isComp) &&
+    isOptionalFiniteNumber(r.rentPerSqft) &&
+    isOptionalFiniteNumber(r.rentRangeLow) &&
+    isOptionalFiniteNumber(r.rentRangeHigh)
+  );
 }
 
 function isMarketSnapshot(value: unknown): value is MarketSnapshot {

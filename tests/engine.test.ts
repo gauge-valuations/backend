@@ -3,7 +3,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { handlePropertyRequest } from "@/lib/property/handler";
 import type { RentcastRentEstimate, RentcastValueEstimate } from "@/lib/rentcast/responses";
 import { parsePropertyReport } from "@/lib/types";
 import {
@@ -17,15 +16,8 @@ import {
   type EngineComp,
 } from "@/lib/valuation/engine";
 
-import {
-  addressRouter,
-  fakeFetch,
-  findNulls,
-  fixtureBody,
-  LISTED_ADDRESS,
-  SENTINEL_KEY,
-  SKIP_NO_FIXTURES,
-} from "./helpers/fixtures";
+import { addressRouter, findNulls, fixtureBody, LISTED_ADDRESS, SKIP_NO_FIXTURES } from "./helpers/fixtures";
+import { callProperty } from "./helpers/request";
 
 /** A 1,000 sqft comp priced at `perSqft` $/sqft with correlation `weight`. */
 const comp = (perSqft: number, weight: number): EngineComp => ({
@@ -191,19 +183,15 @@ describe("engine vs Rentcast on captured fixtures", { skip: SKIP_NO_FIXTURES }, 
   });
 
   test("Prentice Ln report passes parsePropertyReport with the engine wired in", async () => {
-    const url = new URL("http://localhost/api/property");
-    url.searchParams.set("address", LISTED_ADDRESS);
-    const res = await handlePropertyRequest(new Request(url), {
-      fetch: fakeFetch(addressRouter()),
-      apiKey: SENTINEL_KEY,
-      log: () => {},
-    });
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    const report = parsePropertyReport(body);
-    assert.deepEqual(findNulls(body), []);
+    const r = await callProperty(LISTED_ADDRESS, addressRouter());
+    assert.equal(r.status, 200);
+    const report = parsePropertyReport(r.body);
+    assert.deepEqual(findNulls(r.body), []);
     const avm = fixtureBody<RentcastValueEstimate>("02-avm-value-listed");
     const expected = estimateValue(avm.comparables ?? [], 3820, { value: avm.price ?? 0 });
     assert.equal(report.valuation.estimatedValue, expected.value);
+    assert.equal(report.valuation.pricePerSqft, expected.pricePerSqft);
+    assert.equal(report.valuation.valueRangeLow, expected.valueLow);
+    assert.equal(report.valuation.valueRangeHigh, expected.valueHigh);
   });
 });

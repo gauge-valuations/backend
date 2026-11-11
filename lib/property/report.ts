@@ -12,6 +12,7 @@ import type {
 } from "@/lib/rentcast/responses";
 import type { Comp, MarketSnapshot, Property, PropertyReport } from "@/lib/types";
 import { computeValuation } from "@/lib/valuation";
+import { pricePerSqft } from "@/lib/valuation/engine";
 
 /**
  * One deadline shared by every Rentcast call in a request. Kept under the route's
@@ -29,6 +30,11 @@ function isNum(n: unknown): n is number {
   return typeof n === "number" && Number.isFinite(n);
 }
 
+/**
+ * Address, beds, baths and sqft are required (missing -> 502 upstream_incomplete).
+ * Year built and lot size are optional: condo and land records often lack them,
+ * so they are omitted rather than failing the request.
+ */
 function toProperty(subject: RentcastSubjectProperty | undefined): Property {
   const s = subject ?? {};
   const required = {
@@ -36,8 +42,6 @@ function toProperty(subject: RentcastSubjectProperty | undefined): Property {
     beds: s.bedrooms,
     baths: s.bathrooms,
     sqft: s.squareFootage,
-    yearBuilt: s.yearBuilt,
-    lotSizeSqft: s.lotSize,
   };
   const missing = Object.entries(required)
     .filter(([key, v]) => (key === "address" ? typeof v !== "string" || v === "" : !isNum(v)))
@@ -49,16 +53,26 @@ function toProperty(subject: RentcastSubjectProperty | undefined): Property {
     beds: s.bedrooms as number,
     baths: s.bathrooms as number,
     sqft: s.squareFootage as number,
-    yearBuilt: s.yearBuilt as number,
-    lotSizeSqft: s.lotSize as number,
   };
+  if (isNum(s.yearBuilt)) property.yearBuilt = s.yearBuilt;
+  if (isNum(s.lotSize)) property.lotSizeSqft = s.lotSize;
   if (isNum(s.lastSalePrice)) property.lastSalePrice = s.lastSalePrice;
   if (typeof s.lastSaleDate === "string") property.lastSaleDate = s.lastSaleDate;
   return property;
 }
 
+/**
+ * Comp $/sqft via the engine's single definition. Sale comps: whole dollars.
+ * Rent comps: cents (a monthly rate like 2.84). Undefined when price or sqft is unusable.
+ */
+function compPricePerSqft(c: RentcastComparable, kind: "sale" | "rent"): number | undefined {
+  const raw = pricePerSqft(c);
+  if (raw === undefined) return undefined;
+  return kind === "sale" ? Math.round(raw) : Math.round(raw * 100) / 100;
+}
+
 /** Maps a Rentcast comparable, or returns undefined if it lacks a required field. */
-function toComp(c: RentcastComparable, status: Comp["status"]): Comp | undefined {
+function toComp(c: RentcastComparable, status: Comp["status"], kind: "sale" | "rent"): Comp | undefined {
   if (
     typeof c.formattedAddress !== "string" ||
     !isNum(c.bedrooms) ||
@@ -69,7 +83,7 @@ function toComp(c: RentcastComparable, status: Comp["status"]): Comp | undefined
   ) {
     return undefined;
   }
-  return {
+  const comp: Comp = {
     // formattedAddress is used whole, never split, so stray commas
     // ("2004 Rue De St, Tropez, ...") are harmless.
     address: c.formattedAddress,
@@ -80,25 +94,39 @@ function toComp(c: RentcastComparable, status: Comp["status"]): Comp | undefined
     status,
     distanceMiles: c.distance,
   };
+  const perSqft = compPricePerSqft(c, kind);
+  if (perSqft !== undefined) comp.pricePerSqft = perSqft;
+  return comp;
 }
 
-function toComps(comps: RentcastComparable[], status: Comp["status"]): Comp[] {
-  return comps.map((c) => toComp(c, status)).filter((c): c is Comp => c !== undefined);
+function isComp(c: Comp | undefined): c is Comp {
+  return c !== undefined;
 }
+
+/** Rentcast's sale-comp status -> contract status. Anything else is dropped. */
+const SALE_STATUS: Record<string, Comp["status"]> = {
+  Active: "for_sale",
+  Inactive: "off_market",
+};
 
 /**
- * Sale comps for the response: Active only, mapped to "for_sale", in Rentcast's
- * correlation order. Inactive comps are off-market listings, NOT sales, so they are
- * not shown as "sold". A future contract change will add an "off_market" status so
- * inactive comps can be shown; until then they are used only as engine input.
+ * Sale comps for the response: ALL value comps, in Rentcast's correlation order.
+ * Active -> "for_sale". Inactive -> "off_market", never "sold": an Inactive comp is
+ * an off-market listing, not a confirmed sale, and its price is the last asking
+ * price. A comp with any other or missing status is dropped.
  */
 function toSaleComps(comps: RentcastComparable[]): Comp[] {
-  return toComps(comps.filter((c) => c.status === "Active"), "for_sale");
+  return comps
+    .map((c) => {
+      const status = c.status !== undefined ? SALE_STATUS[c.status] : undefined;
+      return status ? toComp(c, status, "sale") : undefined;
+    })
+    .filter(isComp);
 }
 
 /** Every rent comp is a rental, Active or not. */
 function toRentComps(comps: RentcastComparable[]): Comp[] {
-  return toComps(comps, "for_lease");
+  return comps.map((c) => toComp(c, "for_lease", "rent")).filter(isComp);
 }
 
 function toMarket(zip: string, stats: RentcastMarketStats): MarketSnapshot {
@@ -155,7 +183,7 @@ export async function buildPropertyReport(
 
     const property = toProperty(value.subjectProperty);
     const subject = value.subjectProperty as RentcastSubjectProperty;
-    const { valuation, monthlyRent } = computeValuation({
+    const computed = computeValuation({
       subject,
       valueEstimate: value,
       rentEstimate: rent,
@@ -164,9 +192,9 @@ export async function buildPropertyReport(
 
     return {
       property,
-      valuation,
+      valuation: computed.valuation,
       comps: toSaleComps(value.comparables ?? []),
-      rent: { monthlyRent, rentComps: toRentComps(rent.comparables ?? []) },
+      rent: { ...computed.rent, rentComps: toRentComps(rent.comparables ?? []) },
       market: toMarket(subjectZip(value), markets),
     };
   } finally {
