@@ -1,6 +1,7 @@
 // Maps any failure to a safe HTTP error: { error: <short code>, message: <fixed text> }.
-// Messages are fixed strings, so no upstream text (which could echo input or anything
-// sensitive) ever reaches a client.
+// Messages are fixed strings (or, for incomplete_data, built only from fixed field
+// labels), so no upstream text (which could echo input or anything sensitive) ever
+// reaches a client.
 
 import { RentcastError } from "@/lib/rentcast/client";
 
@@ -10,7 +11,7 @@ export type ApiErrorCode =
   | "not_found"
   | "upstream_billing"
   | "upstream_unavailable"
-  | "upstream_incomplete"
+  | "incomplete_data"
   | "internal_error";
 
 export type ApiErrorBody = { error: ApiErrorCode; message: string };
@@ -48,15 +49,69 @@ export class InvalidAddressError extends Error {
   }
 }
 
-/** Rentcast answered 200 but without data the contract requires. */
+/** A piece of upstream data the report cannot be built without. */
+export type IncompleteField =
+  | "address"
+  | "beds"
+  | "baths"
+  | "sqft"
+  | "zipCode"
+  | "avmPrice"
+  | "avmRent"
+  | "marketStats";
+
+/** Log names: the same safe text the logs carried before ("subject beds"). */
+const FIELD_LOG: Record<IncompleteField, string> = {
+  address: "subject address",
+  beds: "subject beds",
+  baths: "subject baths",
+  sqft: "subject sqft",
+  zipCode: "subject zipCode",
+  avmPrice: "avm price",
+  avmRent: "avm rent",
+  marketStats: "market saleData",
+};
+
+/** Plain names for the response message (for logs and API users, not app UI). */
+const FIELD_LABEL: Record<IncompleteField, string> = {
+  address: "street address",
+  beds: "bedroom count",
+  baths: "bathroom count",
+  sqft: "square footage",
+  zipCode: "ZIP code",
+  avmPrice: "value estimate",
+  avmRent: "rent estimate",
+  marketStats: "market statistics",
+};
+
+/**
+ * Rentcast's record lacks data the contract requires. Answered 422 incomplete_data
+ * naming the missing fields; nothing is guessed or defaulted. `upstream` is the
+ * Rentcast failure that signalled it (e.g. a rent 400), kept for the log line only.
+ */
 export class IncompleteDataError extends Error {
-  constructor(what: string) {
-    super(`incomplete upstream data: ${what}`);
+  readonly fields: readonly IncompleteField[];
+
+  constructor(fields: readonly IncompleteField[], upstream?: RentcastError) {
+    const what = fields.map((f) => FIELD_LOG[f]).join(", ");
+    super(`incomplete upstream data: ${what}${upstream ? `; ${upstream.message}` : ""}`);
     this.name = "IncompleteDataError";
+    this.fields = fields;
   }
 }
 
-const ERRORS: Record<ApiErrorCode, HttpError> = {
+function incompleteDataError(err: IncompleteDataError): HttpError {
+  const labels = err.fields.map((f) => FIELD_LABEL[f]);
+  return {
+    status: 422,
+    body: {
+      error: "incomplete_data",
+      message: `The property record for this address is missing: ${labels.join(", ")}.`,
+    },
+  };
+}
+
+const ERRORS: Record<Exclude<ApiErrorCode, "incomplete_data">, HttpError> = {
   unauthorized: {
     status: 401,
     body: { error: "unauthorized", message: "This request is not authorized." },
@@ -77,10 +132,6 @@ const ERRORS: Record<ApiErrorCode, HttpError> = {
     status: 502,
     body: { error: "upstream_unavailable", message: "The property data provider did not respond. Try again." },
   },
-  upstream_incomplete: {
-    status: 502,
-    body: { error: "upstream_incomplete", message: "The property data provider returned incomplete data for this address." },
-  },
   internal_error: {
     status: 500,
     body: { error: "internal_error", message: "Something went wrong." },
@@ -91,7 +142,7 @@ function isBillingCode(code: string): boolean {
   return /quota|billing|subscription/i.test(code);
 }
 
-function codeForRentcast(err: RentcastError): ApiErrorCode {
+function codeForRentcast(err: RentcastError): keyof typeof ERRORS {
   if (err.kind === "timeout" || err.kind === "network" || err.kind === "parse") {
     return "upstream_unavailable";
   }
@@ -114,7 +165,7 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof UnauthorizedError) return ERRORS.unauthorized;
   if (err instanceof CallBudgetError) return ERRORS.upstream_billing;
   if (err instanceof InvalidAddressError) return ERRORS.invalid_address;
-  if (err instanceof IncompleteDataError) return ERRORS.upstream_incomplete;
+  if (err instanceof IncompleteDataError) return incompleteDataError(err);
   if (err instanceof RentcastError) return ERRORS[codeForRentcast(err)];
   return ERRORS.internal_error;
 }

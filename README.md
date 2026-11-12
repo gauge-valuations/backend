@@ -66,9 +66,12 @@ These are two addresses, not an accuracy study.
   becomes Rentcast's own number, and the report carries no low-confidence flag for
   rent (`lowConfidence` exists only on the valuation).
 - **Incomplete records fail.** If Rentcast's record for the subject lacks beds, baths or
-  square footage (common for condos and land), the request returns 502
-  `upstream_incomplete` instead of a partial report. A missing year built or lot size is
-  fine; those fields are simply omitted.
+  square footage (common for condos and land), or Rentcast cannot estimate its rent (a
+  rent 400 for an address the value lookup resolved), the request returns 422
+  `incomplete_data` instead of a partial report. Its message names the missing fields
+  (for logs and API users), and no missing number is guessed. These failures are not
+  cached, and each attempt still reserves the full 4 budgeted calls. A missing year
+  built or lot size is fine; those fields are simply omitted.
 - **No listing, no margin.** An address that is not actively listed gets a full report
   with no `listPrice`, so the app shows no potential margin.
 - **Address cleanup is display-only.** Rentcast sometimes splits a street name across
@@ -147,9 +150,9 @@ strings; no upstream text is passed through.
 | 401 | `unauthorized` | Demo gate is on and `X-Demo-Key` is missing or wrong. |
 | 402 | `upstream_billing` | Our monthly call budget is used up or could not be checked, or Rentcast reported a billing, quota or subscription problem. |
 | 404 | `not_found` | Rentcast has no property record for this address. |
+| 422 | `incomplete_data` | Rentcast's record lacks data the report requires; the message names the missing fields (see Limits). |
 | 500 | `internal_error` | Server problem, e.g. the Rentcast key is missing or Rentcast rejected it. |
 | 502 | `upstream_unavailable` | Rentcast timed out, failed, returned a 5xx, or rate-limited us (a Rentcast 429 maps to 502). |
-| 502 | `upstream_incomplete` | Rentcast answered without data the report requires (see Limits). |
 
 `OPTIONS /api/property` answers the browser CORS preflight (204). It is never gated.
 

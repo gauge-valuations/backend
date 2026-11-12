@@ -1,7 +1,7 @@
 // Builds a PropertyReport for one address from four Rentcast calls.
 
 import { displayAddress } from "@/lib/displayAddress";
-import { IncompleteDataError } from "@/lib/errors";
+import { IncompleteDataError, type IncompleteField } from "@/lib/errors";
 import { createRentcastClient, RentcastError, type FetchLike } from "@/lib/rentcast/client";
 import type {
   RentcastComparable,
@@ -32,7 +32,8 @@ function isNum(n: unknown): n is number {
 }
 
 /**
- * Address, beds, baths and sqft are required (missing -> 502 upstream_incomplete).
+ * Address, beds, baths and sqft are required (missing -> 422 incomplete_data naming
+ * them; nothing is guessed or defaulted).
  * Year built and lot size are optional: condo and land records often lack them,
  * so they are omitted rather than failing the request.
  */
@@ -44,10 +45,11 @@ function toProperty(subject: RentcastSubjectProperty | undefined): Property {
     baths: s.bathrooms,
     sqft: s.squareFootage,
   };
-  const missing = Object.entries(required)
-    .filter(([key, v]) => (key === "address" ? typeof v !== "string" || v === "" : !isNum(v)))
-    .map(([key]) => key);
-  if (missing.length > 0) throw new IncompleteDataError(`subject ${missing.join(",")}`);
+  const missing = (Object.keys(required) as (keyof typeof required)[]).filter((key) => {
+    const v = required[key];
+    return key === "address" ? typeof v !== "string" || v === "" : !isNum(v);
+  });
+  if (missing.length > 0) throw new IncompleteDataError(missing satisfies IncompleteField[]);
 
   const property: Property = {
     address: displayAddress(s),
@@ -133,7 +135,7 @@ function toMarket(zip: string, stats: RentcastMarketStats): MarketSnapshot {
   const medianPrice = stats.saleData?.medianPrice;
   const avgDaysOnMarket = stats.saleData?.averageDaysOnMarket;
   if (!isNum(medianPrice) || !isNum(avgDaysOnMarket)) {
-    throw new IncompleteDataError("market saleData");
+    throw new IncompleteDataError(["marketStats"]);
   }
   return { zip, medianPrice, avgDaysOnMarket };
 }
@@ -142,7 +144,7 @@ function toMarket(zip: string, stats: RentcastMarketStats): MarketSnapshot {
 function subjectZip(value: RentcastValueEstimate): string {
   const zip = value.subjectProperty?.zipCode;
   if (typeof zip !== "string" || !/^\d{5}$/.test(zip)) {
-    throw new IncompleteDataError("subject zipCode");
+    throw new IncompleteDataError(["zipCode"]);
   }
   return zip;
 }
@@ -150,6 +152,17 @@ function subjectZip(value: RentcastValueEstimate): string {
 /** A 404 from /listings/sale means "never listed": no listing, not an error. */
 function noListingOn404(err: unknown): RentcastSaleListing[] {
   if (err instanceof RentcastError && err.kind === "http" && err.status === 404) return [];
+  throw err;
+}
+
+/**
+ * A rent 400 once the value call has resolved the address is not a bad address:
+ * Rentcast could not estimate rent for this record. -> 422 incomplete_data.
+ */
+function rentIncompleteOn400(err: unknown): never {
+  if (err instanceof RentcastError && err.kind === "http" && err.status === 400) {
+    throw new IncompleteDataError(["avmRent"], err);
+  }
   throw err;
 }
 
@@ -168,20 +181,30 @@ export async function buildPropertyReport(
   const client = createRentcastClient({ fetch: deps.fetch, apiKey: deps.apiKey, signal: deadline.signal });
 
   try {
-    // Three calls start together; markets needs the AVM's zip, so it chains off the
-    // value call alone and still overlaps the other two.
+    // Three calls start together, up front. Markets needs the AVM's zip, so it chains
+    // off the value call alone (still overlapping the other two) and is skipped when
+    // the subject is incomplete, since that request will fail anyway.
     const valueP = client.get<RentcastValueEstimate>("/avm/value", { address });
     const rentP = client.get<RentcastRentEstimate>("/avm/rent/long-term", { address });
     const listingsP = client
       .get<RentcastSaleListing[]>("/listings/sale", { address })
       .catch(noListingOn404);
-    const marketsP = valueP.then((value) =>
-      client.get<RentcastMarketStats>("/markets", { zipCode: subjectZip(value) }),
-    );
+    const marketsP = valueP.then((value) => {
+      toProperty(value.subjectProperty);
+      return client.get<RentcastMarketStats>("/markets", { zipCode: subjectZip(value) });
+    });
+    // Results are checked in a fixed order below, not by whichever call fails first.
+    // Mark the rest handled so an early throw never leaves an unhandled rejection.
+    for (const p of [rentP, listingsP, marketsP]) p.catch(() => {});
 
-    const [value, rent, listings, markets] = await Promise.all([valueP, rentP, listingsP, marketsP]);
-
+    // 1. Value errors (404, bad address, billing) win.
+    const value = await valueP;
+    // 2. Then an incomplete subject, whatever the rent call did (it may 400 on one).
     const property = toProperty(value.subjectProperty);
+    // 3. Then the rest.
+    const rent = await rentP.catch(rentIncompleteOn400);
+    const [listings, markets] = await Promise.all([listingsP, marketsP]);
+
     const subject = value.subjectProperty as RentcastSubjectProperty;
     const computed = computeValuation({
       subject,

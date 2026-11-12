@@ -37,13 +37,15 @@ Never write `Co-Authored-By` or any tool/agent attribution into commits, PR bodi
 
 - `GET /api/health` -> `{ "ok": true }`
 - `GET /api/property?address=...` -> `PropertyReport` (see `lib/types.ts`), or
-  `{ error, message }` with 400 / 401 / 402 / 404 / 500 / 502. Logic lives in `lib/property/`.
+  `{ error, message }` with 400 / 401 / 402 / 404 / 422 / 500 / 502. Logic lives in `lib/property/`.
   - Returns the engine's `pricePerSqft` / `valueRangeLow` / `valueRangeHigh` (plus
     `lowConfidence: true` only when it applies) and `rentPerSqft` / `rentRangeLow` /
     `rentRangeHigh`. Every comp carries `pricePerSqft` (sale: whole dollars, rent: cents).
   - All value comps, in correlation order: Rentcast Active -> `for_sale`, Inactive ->
     `off_market` (never `sold`: off-market is not a confirmed sale).
   - `yearBuilt` / `lotSizeSqft` are omitted when Rentcast lacks them.
+  - Missing beds / baths / sqft / address (or a rent 400 once the value call resolved the
+    address) -> 422 `incomplete_data` naming the fields; never guessed, never cached.
 - `OPTIONS /api/property` -> CORS preflight (204). Never gated.
 
 `lib/types.ts` is a byte-for-byte copy of the mobile repo's `src/types.ts` (the shared

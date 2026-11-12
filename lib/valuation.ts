@@ -1,7 +1,7 @@
 // The valuation swap point: everything that decides estimatedValue and monthlyRent
 // goes through computeValuation(). Swap the method here without touching the route.
 
-import { IncompleteDataError } from "@/lib/errors";
+import { IncompleteDataError, type IncompleteField } from "@/lib/errors";
 import type {
   RentcastRentEstimate,
   RentcastSaleListing,
@@ -29,8 +29,8 @@ export type ValuationOutput = {
   internal: { value: ValueResult; rent: RentResult };
 };
 
-function requireNumber(n: number | undefined, what: string): number {
-  if (typeof n !== "number" || !Number.isFinite(n)) throw new IncompleteDataError(what);
+function requireNumber(n: number | undefined, field: IncompleteField): number {
+  if (typeof n !== "number" || !Number.isFinite(n)) throw new IncompleteDataError([field]);
   return n;
 }
 
@@ -40,13 +40,13 @@ export function computeValuation(input: ValuationInput): ValuationOutput {
   // The engine sees ALL value comps, Active and Inactive (off-market listings are
   // still useful price evidence).
   const value = estimateValue(valueEstimate.comparables ?? [], subject.squareFootage, {
-    value: requireNumber(valueEstimate.price, "avm price"),
+    value: requireNumber(valueEstimate.price, "avmPrice"),
     low: valueEstimate.priceRangeLow,
     high: valueEstimate.priceRangeHigh,
   });
 
   const rent = estimateRent(rentEstimate.comparables ?? [], subject.squareFootage, {
-    value: requireNumber(rentEstimate.rent, "avm rent"),
+    value: requireNumber(rentEstimate.rent, "avmRent"),
     low: rentEstimate.rentRangeLow,
     high: rentEstimate.rentRangeHigh,
   });

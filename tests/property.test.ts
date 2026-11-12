@@ -3,10 +3,13 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
+import { billingPeriodKey, CALLS_PER_REPORT } from "@/lib/budget";
+import { MemoryCache } from "@/lib/cache";
 import { displayAddress } from "@/lib/displayAddress";
-import { toHttpError } from "@/lib/errors";
+import { IncompleteDataError, toHttpError } from "@/lib/errors";
 import { stripNulls } from "@/lib/normalize/nulls";
-import { RentcastError } from "@/lib/rentcast/client";
+import { reportCacheKey } from "@/lib/property/handler";
+import { RentcastError, type FetchLike } from "@/lib/rentcast/client";
 import type {
   RentcastComparable,
   RentcastRentEstimate,
@@ -21,10 +24,12 @@ import {
   findNulls,
   fixtureBody,
   hangingFetch,
+  jsonResponse,
   LISTED_ADDRESS,
   loadFixture,
   SENTINEL_KEY,
   SKIP_NO_FIXTURES,
+  type Fixture,
   UNLISTED_ADDRESS,
 } from "./helpers/fixtures";
 import { callProperty as call, errorCode, type CallResult } from "./helpers/request";
@@ -153,10 +158,112 @@ describe("GET /api/property (offline)", { skip: SKIP_NO_FIXTURES }, () => {
     assert.deepEqual(findNulls(r.body), []);
   });
 
-  test("subject missing sqft -> 502 upstream_incomplete", async () => {
+  test("subject missing sqft -> 422 incomplete_data naming square footage", async () => {
     const r = await call(LISTED_ADDRESS, addressRouter({ "/avm/value": prenticeWithSubject({ squareFootage: undefined }) }));
-    assert.equal(r.status, 502);
-    assert.equal(errorCode(r), "upstream_incomplete");
+    assert.equal(r.status, 422);
+    assert.deepEqual(r.body, {
+      error: "incomplete_data",
+      message: "The property record for this address is missing: square footage.",
+    });
+    assert.ok(r.logs.includes("incomplete upstream data: subject sqft"));
+    assertNoLeaks(r);
+  });
+
+  test("subject missing beds -> 422 incomplete_data naming bedroom count, no markets call", async () => {
+    const r = await call(LISTED_ADDRESS, addressRouter({ "/avm/value": prenticeWithSubject({ bedrooms: undefined }) }));
+    assert.equal(r.status, 422);
+    assert.deepEqual(r.body, {
+      error: "incomplete_data",
+      message: "The property record for this address is missing: bedroom count.",
+    });
+    assert.ok(r.logs.includes("incomplete upstream data: subject beds"));
+    assert.ok(!r.calls.includes("/markets"), "markets called for an incomplete subject");
+    assertNoLeaks(r);
+  });
+
+  test("subject missing beds and sqft -> one 422 naming both", async () => {
+    const r = await call(
+      LISTED_ADDRESS,
+      addressRouter({ "/avm/value": prenticeWithSubject({ bedrooms: undefined, squareFootage: undefined }) }),
+    );
+    assert.equal(r.status, 422);
+    assert.equal(
+      (r.body as { message: string }).message,
+      "The property record for this address is missing: bedroom count, square footage.",
+    );
+  });
+
+  test("rent 400 (fixture 08 body) + subject missing beds -> 422 naming beds, not invalid_address", async () => {
+    const r = await call(
+      LISTED_ADDRESS,
+      addressRouter({
+        "/avm/value": prenticeWithSubject({ bedrooms: undefined }),
+        "/avm/rent/long-term": loadFixture("08-avm-value-bad"),
+      }),
+    );
+    assert.equal(r.status, 422);
+    assert.equal(errorCode(r), "incomplete_data");
+    assert.match((r.body as { message: string }).message, /bedroom count/);
+    assertNoLeaks(r);
+  });
+
+  test("rent 400 (fixture 08 body) + complete subject -> 422 naming rent estimate", async () => {
+    const r = await call(LISTED_ADDRESS, addressRouter({ "/avm/rent/long-term": loadFixture("08-avm-value-bad") }));
+    assert.equal(r.status, 422);
+    assert.deepEqual(r.body, {
+      error: "incomplete_data",
+      message: "The property record for this address is missing: rent estimate.",
+    });
+    assert.ok(
+      r.logs.includes("incomplete upstream data: avm rent; rentcast /avm/rent/long-term 400 resource/bad-request"),
+      r.logs.join("\n"),
+    );
+    assertNoLeaks(r);
+  });
+
+  test("value, rent and listings are all requested up front, even for an incomplete subject", async () => {
+    const route = addressRouter({
+      "/avm/value": prenticeWithSubject({ bedrooms: undefined }),
+      "/avm/rent/long-term": loadFixture("08-avm-value-bad"),
+    });
+    const requested: string[] = [];
+    let release!: () => void;
+    const othersRequested = new Promise<void>((resolve) => (release = resolve));
+    // The value answer is held back until rent and listings have BOTH been requested.
+    // If either were requested only after the value result was checked, this would
+    // wait until the deadline and come back as a 502 timeout instead of a 422.
+    const fetch: FetchLike = async (input, init) => {
+      const endpoint = input.pathname.replace(/^\/v1/, "");
+      requested.push(endpoint);
+      if (requested.includes("/avm/rent/long-term") && requested.includes("/listings/sale")) release();
+      if (endpoint === "/avm/value") {
+        await Promise.race([
+          othersRequested,
+          new Promise((_, reject) => init.signal?.addEventListener("abort", () => reject(new Error("aborted")))),
+        ]);
+      }
+      return jsonResponse(route(endpoint, input.searchParams) as Fixture);
+    };
+    const r = await call(LISTED_ADDRESS, route, { deps: { fetch, deadlineMs: 1_000 } });
+    assert.equal(r.status, 422, JSON.stringify(r.body));
+    assert.deepEqual([...requested].sort(), ["/avm/rent/long-term", "/avm/value", "/listings/sale"]);
+    assert.ok(!requested.includes("/markets"));
+  });
+
+  test("422 incomplete_data is never cached, and still reserves the full call budget", async () => {
+    const cache = new MemoryCache();
+    const now = () => new Date("2026-11-11T12:00:00Z");
+    const route = addressRouter({ "/avm/value": prenticeWithSubject({ bedrooms: undefined }) });
+    const first = await call(LISTED_ADDRESS, route, { deps: { cache, now } });
+    const second = await call(LISTED_ADDRESS, route, { deps: { cache, now } });
+    for (const r of [first, second]) {
+      assert.equal(r.status, 422);
+      assert.equal(r.headers.get("X-Cache"), null);
+      assert.ok(r.calls.includes("/avm/value"), "second request should go upstream again");
+    }
+    assert.equal(await cache.get(reportCacheKey(LISTED_ADDRESS)), null);
+    // 4 per attempt even though /markets was skipped.
+    assert.equal(await cache.get(billingPeriodKey(now(), 1)), String(2 * CALLS_PER_REPORT));
   });
 
   test("too few comps -> lowConfidence: true with Rentcast's numbers", async () => {
@@ -241,6 +348,11 @@ describe("error mapping", () => {
     assert.equal(map(500), 502);
     assert.equal(map(504), 502);
     assert.equal(map(418), 500);
+  });
+  test("incomplete data -> 422, never a 5xx", () => {
+    const { status, body } = toHttpError(new IncompleteDataError(["beds"]));
+    assert.equal(status, 422);
+    assert.equal(body.error, "incomplete_data");
   });
   test("non-HTTP failures", () => {
     assert.equal(toHttpError(new RentcastError("/x", "timeout")).status, 502);
